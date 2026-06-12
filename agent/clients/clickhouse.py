@@ -16,30 +16,33 @@ def _get_client():
         host=settings.clickhouse_host,
         username=settings.clickhouse_user or "default",
         password=settings.clickhouse_password,
+        database=settings.clickhouse_db,
         secure=True,
     )
 
 
-def _fetch_web_mentions(client, account_id: str) -> list[WebMention]:
+def _fetch_market_signals(client) -> list[WebMention]:
     query = """
         SELECT source, sentiment, signal_text, url, ts
-        FROM web_mentions
-        WHERE account_id = %(account_id)s
-          AND sentiment = 'negative'
+        FROM market_signals
+        WHERE sentiment = 'negative'
         ORDER BY ts DESC
         LIMIT 10
     """
-    rows = client.query(query, parameters={"account_id": account_id}).named_results()
-    return [
-        WebMention(
-            source=row["source"],
-            sentiment=row["sentiment"],
-            signal_text=row["signal_text"],
-            url=row["url"],
-            ts=row["ts"].isoformat() if hasattr(row["ts"], "isoformat") else str(row["ts"]),
+    rows = client.query(query).named_results()
+    mentions: list[WebMention] = []
+    for row in rows:
+        ts = row.get("ts") or ""
+        mentions.append(
+            WebMention(
+                source=row.get("source") or "reddit",
+                sentiment=row.get("sentiment") or "negative",
+                signal_text=row.get("signal_text") or "",
+                url=row.get("url") or "",
+                ts=str(ts),
+            )
         )
-        for row in rows
-    ]
+    return mentions
 
 
 def fetch_churn_alert(account_id: str) -> ChurnAlert:
@@ -53,7 +56,7 @@ def fetch_churn_alert(account_id: str) -> ChurnAlert:
             arr,
             usage_now,
             usage_before,
-            web_signals,
+            support_tickets,
             churn_score,
             round((1 - usage_now / (usage_before + 1)) * 100, 1) AS usage_drop_pct
         FROM churn_scores
@@ -66,7 +69,8 @@ def fetch_churn_alert(account_id: str) -> ChurnAlert:
         raise LookupError(f"No churn score found for account_id={account_id!r}")
 
     row: dict[str, Any] = rows[0]
-    web_mentions = _fetch_web_mentions(client, account_id)
+    web_mentions = _fetch_market_signals(client)
+    web_signals = len(web_mentions)
 
     return ChurnAlert(
         account_id=row["account_id"],
@@ -74,8 +78,8 @@ def fetch_churn_alert(account_id: str) -> ChurnAlert:
         arr=float(row["arr"]),
         usage_now=float(row["usage_now"]),
         usage_before=float(row["usage_before"]),
-        web_signals=int(row["web_signals"]),
-        churn_score=float(row["churn_score"]),
+        web_signals=web_signals,
+        churn_score=float(row["churn_score"] or 0),
         usage_drop_pct=float(row["usage_drop_pct"]),
         web_mentions=web_mentions,
     )
@@ -91,7 +95,7 @@ def list_high_risk_accounts(limit: int = 10) -> list[ChurnAlert]:
             arr,
             usage_now,
             usage_before,
-            web_signals,
+            support_tickets,
             churn_score,
             round((1 - usage_now / (usage_before + 1)) * 100, 1) AS usage_drop_pct
         FROM churn_scores
@@ -104,20 +108,22 @@ def list_high_risk_accounts(limit: int = 10) -> list[ChurnAlert]:
         parameters={"threshold": settings.churn_threshold, "limit": limit},
     ).named_results()
 
+    web_mentions = _fetch_market_signals(client)
+    web_signals = len(web_mentions)
+
     alerts: list[ChurnAlert] = []
     for row in rows:
-        account_id = row["account_id"]
         alerts.append(
             ChurnAlert(
-                account_id=account_id,
+                account_id=row["account_id"],
                 account_name=row["account_name"],
                 arr=float(row["arr"]),
                 usage_now=float(row["usage_now"]),
                 usage_before=float(row["usage_before"]),
-                web_signals=int(row["web_signals"]),
-                churn_score=float(row["churn_score"]),
+                web_signals=web_signals,
+                churn_score=float(row["churn_score"] or 0),
                 usage_drop_pct=float(row["usage_drop_pct"]),
-                web_mentions=_fetch_web_mentions(client, account_id),
+                web_mentions=web_mentions,
             )
         )
     return alerts

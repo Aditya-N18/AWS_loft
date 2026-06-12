@@ -1,0 +1,33 @@
+services:
+  - type: web
+    name: ghost-churn-agent
+    runtime: python
+    branch: kenil/agent-core
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn agent.openui_server:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.13.0"
+      - key: AGENT_MOCK_MODE
+        value: "false"
+      - key: CHURN_THRESHOLD
+        value: "5000"
+      - key: LANGFUSE_HOST
+        value: https://us.cloud.langfuse.com
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: SENSO_API_KEY
+        sync: false
+      - key: LANGFUSE_PUBLIC_KEY
+        sync: false
+      - key: LANGFUSE_SECRET_KEY
+        sync: false
+      - key: CLICKHOUSE_HOST
+        sync: false
+      - key: CLICKHOUSE_USER
+        value: default
+      - key: CLICKHOUSE_PASSWORD
+        sync: false
+      - key: CLICKHOUSE_DB
+        value: ghost_churn
