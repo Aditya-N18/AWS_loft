@@ -1,0 +1,25 @@
+services:
+  - type: worker
+    name: ghost-churn-poller
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python poller.py
+    envVars:
+      - key: CLICKHOUSE_HOST
+        value: gr0sklg10m.us-west-2.aws.clickhouse.cloud
+      - key: CLICKHOUSE_USER
+        value: default
+      - key: CLICKHOUSE_PASSWORD
+        value: y_T~V4F~ECB02
+  - type: web
+    name: ghost-churn-api
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app.py
+    envVars:
+      - key: CLICKHOUSE_HOST
+        value: gr0sklg10m.us-west-2.aws.clickhouse.cloud
+      - key: CLICKHOUSE_USER
+        value: default
+      - key: CLICKHOUSE_PASSWORD
+        value: y_T~V4F~ECB02
