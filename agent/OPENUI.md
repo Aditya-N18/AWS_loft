@@ -56,7 +56,7 @@ Deploy as a Render **Web Service** from branch `kenil/agent-core`.
 
 **Start command:**
 ```bash
-uvicorn agent.openui_server:app --host 0.0.0.0 --port $PORT
+python -m uvicorn agent.openui_server:app --host 0.0.0.0 --port $PORT
 ```
 
 **Build command:**
