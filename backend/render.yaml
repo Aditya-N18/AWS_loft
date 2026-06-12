@@ -1,9 +1,18 @@
+# Ghost Churn Backend — Render deploy
+#
+# IMPORTANT: Render Workflows are NOT created by this blueprint.
+# The worker below does NOT register workflow tasks (causes "not found" errors).
+# Create a Workflow service manually: see WORKFLOW_SETUP.md
+#
+# Keep only the web service here; delete the worker after creating a real Workflow.
+
 services:
   - type: web
     name: ghost-churn-backend
     env: python
     region: oregon
     plan: free
+    rootDir: AWS_loft/backend
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
@@ -12,7 +21,11 @@ services:
       - key: PYTHON_VERSION
         value: 3.11.0
       - key: RENDER_WORKFLOW_SLUG
-        value: ghost-churn-workflows
+        sync: false
+      - key: RENDER_TASK_AGENT_EVAL
+        sync: false
+      - key: RENDER_TASK_SEND_EMAIL
+        sync: false
       - key: RENDER_API_KEY
         sync: false
       - key: TESTMAIL_API_KEY
@@ -29,41 +42,3 @@ services:
         sync: false
       - key: SMTP_PASSWORD
         sync: false
-
-  - type: worker
-    name: ghost-churn-workflows
-    env: python
-    region: oregon
-    plan: starter
-    buildCommand: pip install -r requirements.txt
-    startCommand: python app/workflows.py
-    envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.0
-      - key: RENDER_API_KEY
-        sync: false
-      - key: TESTMAIL_API_KEY
-        sync: false
-      - key: TESTMAIL_NAMESPACE
-        sync: false
-      - key: TESTMAIL_TO_EMAIL
-        sync: false
-      - key: TESTMAIL_FROM_EMAIL
-        sync: false
-      - key: SMTP_HOST
-        sync: false
-      - key: SMTP_USER
-        sync: false
-      - key: SMTP_PASSWORD
-        sync: false
-      - key: LANGFUSE_PUBLIC_KEY
-        sync: false
-      - key: LANGFUSE_SECRET_KEY
-        sync: false
-      - key: LANGFUSE_HOST
-        value: https://us.cloud.langfuse.com
-      - key: BACKEND_INTERNAL_URL
-        fromService:
-          name: ghost-churn-backend
-          type: web
-          property: host
