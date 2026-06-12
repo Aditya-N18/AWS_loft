@@ -34,3 +34,8 @@ services:
         sync: false
       - key: TESTMAIL_NAMESPACE
         sync: false
+      - key: BACKEND_INTERNAL_URL
+        fromService:
+          name: ghost-churn-backend
+          type: web
+          property: host
