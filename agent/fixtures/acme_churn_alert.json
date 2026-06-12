@@ -1,0 +1,33 @@
+{
+  "account_id": "acme-corp",
+  "account_name": "Acme Corp",
+  "arr": 48000,
+  "usage_now": 120,
+  "usage_before": 364,
+  "web_signals": 3,
+  "churn_score": 96480,
+  "usage_drop_pct": 67.0,
+  "web_mentions": [
+    {
+      "source": "reddit",
+      "sentiment": "negative",
+      "signal_text": "Been evaluating alternatives. Support has been MIA for 2 weeks.",
+      "url": "https://reddit.com/r/softwaretools/comments/xyz",
+      "ts": "2025-06-12T13:41:00Z"
+    },
+    {
+      "source": "twitter",
+      "sentiment": "negative",
+      "signal_text": "Our team is frustrated with response times on critical tickets.",
+      "url": "https://twitter.com/acme_devops/status/123",
+      "ts": "2025-06-12T12:55:00Z"
+    },
+    {
+      "source": "g2",
+      "sentiment": "negative",
+      "signal_text": "Considering a switch before renewal. Usage has dropped sharply.",
+      "url": "https://g2.com/products/example/reviews/acme",
+      "ts": "2025-06-12T11:20:00Z"
+    }
+  ]
+}

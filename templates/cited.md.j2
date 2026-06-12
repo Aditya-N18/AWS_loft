@@ -1,0 +1,46 @@
+# Ghost Churn — Save Action Report
+**Account:** {{ account_name }}
+**ARR:** ${{ "{:,.0f}".format(arr) }}
+**Action taken:** {{ action_taken_at }}
+**Time from first signal to action:** {{ minutes_signal_to_action }} minutes
+
+## Evidence Chain
+
+{% for mention in web_mentions %}
+### Signal {{ loop.index }} — Open Web ({{ mention.source | title }})
+- **Source:** {{ mention.source }} — {{ mention.signal_text[:80] }}{% if mention.signal_text|length > 80 %}...{% endif %}
+- **Quote:** "{{ mention.signal_text }}"
+- **URL:** {{ mention.url }}
+- **Detected:** {{ mention.ts }}
+
+{% endfor %}
+### Signal {{ web_mentions|length + 1 }} — Product Usage (ClickHouse)
+- **Metric:** Feature event count, last 7 days vs. prior 7 days
+- **Drop:** {{ usage_drop_pct }}% reduction in overall activity
+- **Usage now:** {{ usage_now }} events
+- **Usage before:** {{ usage_before }} events
+- **Baseline period:** 14 days
+
+## Churn Score
+- **Compound score:** {{ arr }} (ARR) × {{ usage_drop_ratio }} (usage drop) × {{ web_signals }} (web signals) = **{{ churn_score }}**
+- **Threshold for action:** {{ threshold }}
+- **Score at action:** {{ churn_score }}
+
+## Senso Verification
+- **Max authorized discount:** {{ max_discount_pct }}%
+- **Key contact:** {{ key_contact_name }} ({{ key_contact_title }})
+- **Renewal date:** {{ renewal_date }} ({{ days_to_renewal }} days)
+- **Use case on record:** {{ use_case }}
+- **Senso policy cited:** {{ senso_policy }}
+
+## Action Taken
+- **Offer:** {{ offer_discount_pct }}% discount on annual renewal + {{ feature_unlock }} feature unlock
+- **Email sent to:** {{ contact_email }}
+- **CRM task created:** {{ crm_task_id }}
+- **Approved by:** {{ approved_by }}
+
+## Langfuse Trace
+- **Trace ID:** {{ langfuse_trace_id }}
+- **Agent confidence:** {{ agent_confidence }}
+- **Steps traced:** {{ steps_traced }}
+- **Hallucination flags:** {{ hallucination_flags }}

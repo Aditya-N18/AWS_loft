@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ghost-churn.local/schemas/churn_input.schema.json",
+  "title": "ChurnAlert",
+  "description": "ClickHouse churn score row from Shresth's pipeline, consumed by Kenil's agent",
+  "type": "object",
+  "required": [
+    "account_id",
+    "account_name",
+    "arr",
+    "usage_now",
+    "usage_before",
+    "web_signals",
+    "churn_score",
+    "usage_drop_pct",
+    "web_mentions"
+  ],
+  "properties": {
+    "account_id": { "type": "string", "example": "acme-corp" },
+    "account_name": { "type": "string", "example": "Acme Corp" },
+    "arr": { "type": "number", "example": 48000 },
+    "usage_now": { "type": "number", "example": 120 },
+    "usage_before": { "type": "number", "example": 364 },
+    "web_signals": { "type": "integer", "minimum": 0, "example": 3 },
+    "churn_score": { "type": "number", "example": 96480 },
+    "usage_drop_pct": { "type": "number", "example": 67.0 },
+    "web_mentions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["source", "sentiment", "signal_text", "url", "ts"],
+        "properties": {
+          "source": { "type": "string", "enum": ["reddit", "twitter", "g2", "capterra", "support"] },
+          "sentiment": { "type": "string", "enum": ["negative", "neutral", "positive"] },
+          "signal_text": { "type": "string" },
+          "url": { "type": "string", "format": "uri" },
+          "ts": { "type": "string", "format": "date-time" }
+        }
+      }
+    }
+  }
+}
