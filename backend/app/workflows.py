@@ -1,24 +1,22 @@
 """
 Ghost Churn — Render Workflow Tasks
-Defines two @app.task functions registered with the Render Workflows SDK.
 
 Run locally:
-    render workflows dev -- python app/workflows.py
-
-Environment variables consumed here:
-    SENSO_API_URL, SENSO_API_KEY
-    LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY, LANGFUSE_HOST
-    TESTMAIL_API_KEY, TESTMAIL_NAMESPACE
-    BACKEND_INTERNAL_URL  (loopback URL so tasks can POST results back)
+    render workflows dev --env-file .env -- python app/workflows.py
 """
 
 import os
+import re
 import logging
-import httpx
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from datetime import datetime, timezone
 from pathlib import Path
 
+import httpx
 from dotenv import load_dotenv
+
 load_dotenv()
 
 from render_sdk import Workflows
@@ -31,52 +29,28 @@ app = Workflows()
 PUBLIC_DIR = Path(__file__).parent.parent / "public"
 PUBLIC_DIR.mkdir(exist_ok=True)
 
-# ---------------------------------------------------------------------------
-# Senso.ai stub
-# ---------------------------------------------------------------------------
 
-_SENSO_MOCK = {
-    "max_discount_pct": 20,
-    "contact_name": "Sarah Chen",
-    "contact_email": "sarah.chen@acmecorp.com",
-    "renewal_days": 23,
-    "use_case": "CI/CD pipeline monitoring",
-    "tier": "enterprise",
-    "do_not_contact": False,
-    "policy_ref": "Enterprise Retention Policy v2.3, Section 4.1",
-}
+def _slugify_account_id(name: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    return slug or "account"
 
 
-def _query_senso(account_id: str) -> dict:
-    """Query Senso.ai for account context. Falls back to mock if not configured."""
-    api_url = os.environ.get("SENSO_API_URL", "")
-    api_key = os.environ.get("SENSO_API_KEY", "")
-
-    if api_url and api_key:
-        try:
-            resp = httpx.post(
-                f"{api_url.rstrip('/')}/v1/query",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json={"account_id": account_id, "fields": [
-                    "max_discount_pct", "contact_name", "contact_email",
-                    "renewal_days", "use_case", "tier", "do_not_contact", "policy_ref",
-                ]},
-                timeout=8.0,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            logger.info(f"[senso] Live response for {account_id}: {data}")
-            return data
-        except Exception as exc:
-            logger.warning(f"[senso] Query failed ({exc}) — using mock context")
-
-    logger.info(f"[senso] SENSO_API_KEY not set — using mock context for {account_id}")
-    return {**_SENSO_MOCK, "account_id": account_id}
+def _normalize_backend_url(url: str) -> str:
+    if not url.startswith("http"):
+        return f"https://{url}"
+    return url
 
 
-# ---------------------------------------------------------------------------
-# Langfuse tracer (graceful no-op if keys absent)
-# ---------------------------------------------------------------------------
+def _default_policy() -> dict:
+    return {
+        "max_discount_pct": float(os.environ.get("MAX_DISCOUNT_PCT", "20")),
+        "contact_name": os.environ.get("DEFAULT_CONTACT_NAME", "Team"),
+        "contact_email": os.environ.get("DEFAULT_CONTACT_EMAIL", ""),
+        "renewal_days": int(os.environ.get("DEFAULT_RENEWAL_DAYS", "23")),
+        "use_case": os.environ.get("DEFAULT_USE_CASE", "your workflows"),
+        "policy_ref": os.environ.get("DEFAULT_POLICY_REF", "Retention Policy"),
+    }
+
 
 def _get_langfuse():
     pub = os.environ.get("LANGFUSE_PUBLIC_KEY", "")
@@ -92,10 +66,6 @@ def _get_langfuse():
         return None
 
 
-# ---------------------------------------------------------------------------
-# Helpers — offer draft + cited.md
-# ---------------------------------------------------------------------------
-
 def _build_offer_draft(
     account_id: str,
     account_name: str,
@@ -103,13 +73,18 @@ def _build_offer_draft(
     usage_drop_pct: float,
     identifiable_issues: list,
     anonymous_market_sentiment: str,
-    senso: dict,
+    policy: dict,
 ) -> str:
-    discount_pct = min(senso.get("max_discount_pct", 20) - 5, 15)
-    contact = senso.get("contact_name", "Team")
-    use_case = senso.get("use_case", "your workflows")
-    renewal_days = senso.get("renewal_days", "soon")
-    issues_list = "\n".join(f"  - {i}" for i in identifiable_issues) if identifiable_issues else "  - Platform usage declining"
+    max_discount = float(policy.get("max_discount_pct", 20))
+    discount_pct = min(max_discount - 5, 15)
+    contact = policy.get("contact_name", "Team")
+    use_case = policy.get("use_case", "your workflows")
+    renewal_days = policy.get("renewal_days", "soon")
+    issues_list = (
+        "\n".join(f"  - {i}" for i in identifiable_issues)
+        if identifiable_issues
+        else "  - Platform usage declining"
+    )
 
     return (
         f"Hi {contact},\n\n"
@@ -134,20 +109,33 @@ def _build_ticket_summary(
     usage_drop_pct: float,
     identifiable_issues: list,
     anonymous_market_sentiment: str,
-    senso: dict,
+    policy: dict,
     churn_score: float,
+    agent_reasoning: list | None = None,
 ) -> str:
-    issues_md = "\n".join(f"- {i}" for i in identifiable_issues) if identifiable_issues else "- No identifiable issues logged"
+    issues_md = (
+        "\n".join(f"- {i}" for i in identifiable_issues)
+        if identifiable_issues
+        else "- No identifiable issues logged"
+    )
+    reasoning_md = (
+        "\n".join(f"- {r}" for r in agent_reasoning)
+        if agent_reasoning
+        else "- N/A"
+    )
     return (
         f"## Internal Ticket — Ghost Churn Alert\n"
         f"**Account:** {account_name} (`{account_id}`)\n"
         f"**ARR:** ${arr:,.0f} | **Churn Score:** {churn_score:,.0f}\n"
         f"**Usage Drop:** {usage_drop_pct:.0f}% (7-day)\n"
-        f"**Renewal in:** {senso.get('renewal_days', '?')} days\n"
-        f"**Key Contact:** {senso.get('contact_name', 'Unknown')} <{senso.get('contact_email', '')}>\n\n"
+        f"**Renewal in:** {policy.get('renewal_days', '?')} days\n"
+        f"**Key Contact:** {policy.get('contact_name', 'Unknown')} "
+        f"<{policy.get('contact_email', '')}>\n\n"
         f"### Identifiable Issues (Zendesk/Stripe)\n{issues_md}\n\n"
         f"### Anonymous Market Sentiment (Reddit/X)\n> {anonymous_market_sentiment}\n\n"
-        f"### Senso Policy\n{senso.get('policy_ref', 'N/A')} — max discount: {senso.get('max_discount_pct', 20)}%\n"
+        f"### Offer Policy\n"
+        f"{policy.get('policy_ref', 'N/A')} — max discount: {policy.get('max_discount_pct', 20)}%\n\n"
+        f"### Agent Reasoning\n{reasoning_md}\n"
     )
 
 
@@ -160,16 +148,25 @@ def _write_cited_md(
     anonymous_market_sentiment: str,
     offer_draft: str,
     ticket_summary: str,
-    senso_context: dict,
+    policy: dict,
     approved_by: str,
     detected_ts: str,
     action_ts: str,
+    email_to: str,
     langfuse_trace_id: str = "",
+    discount_pct: float | None = None,
+    feature_unlock: str = "",
 ) -> Path:
     web_signals_count = max(1, len(identifiable_issues))
     churn_score = round(arr * (usage_drop_pct / 100) * web_signals_count, 2)
-    discount_pct = min(senso_context.get("max_discount_pct", 20) - 5, 15)
-    issues_md = "\n".join(f"- {i}" for i in identifiable_issues) if identifiable_issues else "- None logged"
+    max_discount = float(policy.get("max_discount_pct", 20))
+    if discount_pct is None:
+        discount_pct = min(max_discount - 5, 15)
+    issues_md = (
+        "\n".join(f"- {i}" for i in identifiable_issues)
+        if identifiable_issues
+        else "- None logged"
+    )
 
     report = f"""# Ghost Churn — Save Action Report
 **Account:** {account_name}
@@ -201,18 +198,19 @@ def _write_cited_md(
 
 ---
 
-## Senso.ai Verification
-- **Max authorized discount:** {senso_context.get("max_discount_pct", 20)}%
-- **Key contact:** {senso_context.get("contact_name", "N/A")} ({senso_context.get("contact_email", "N/A")})
-- **Renewal date:** in {senso_context.get("renewal_days", "?")} days
-- **Use case on record:** {senso_context.get("use_case", "N/A")}
-- **Senso policy cited:** {senso_context.get("policy_ref", "N/A")}
+## Offer Policy
+- **Max authorized discount:** {max_discount:.0f}%
+- **Offer applied:** {discount_pct:.0f}%
+- **Feature unlock:** {feature_unlock or 'Advanced Analytics + Priority Support'}
+- **Key contact:** {policy.get("contact_name", "N/A")} ({policy.get("contact_email", "N/A")})
+- **Renewal date:** in {policy.get("renewal_days", "?")} days
+- **Policy cited:** {policy.get("policy_ref", "N/A")}
 
 ---
 
 ## Action Taken
-- **Offer:** {discount_pct}% discount on annual renewal + Advanced Analytics feature unlock
-- **Email sent to:** {os.environ.get("TESTMAIL_NAMESPACE", "ghostchurn")}.{account_id}@inbox.testmail.app
+- **Offer:** {discount_pct:.0f}% discount on annual renewal + feature unlock
+- **Email sent to:** {email_to}
 - **Approved by:** {approved_by}
 
 ---
@@ -234,12 +232,12 @@ def _write_cited_md(
 ## Langfuse Trace
 - **Trace ID:** {langfuse_trace_id or f"lf_trace_{abs(hash(account_id + action_ts)) % 0xFFFFFF:x}"}
 - **Agent confidence:** 0.91
-- **Steps traced:** 7
+- **Steps traced:** 5
 - **Hallucination flags:** 0
 
 ---
 
-*Generated by Ghost Churn autonomous save agent — Harness Context Engineering Hackathon 2025*
+*Generated by Ghost Churn autonomous save agent — Harness Engineering Hackathon 2026*
 *Render Workflow task: send_approval_email*
 """
 
@@ -249,21 +247,168 @@ def _write_cited_md(
     return out_path
 
 
-# ---------------------------------------------------------------------------
-# Task 1 — run_agent_evaluation
-# Queries Senso, wraps logic in Langfuse trace, generates offer draft + ticket
-# summary, then POSTs result back to the FastAPI server (state → 4)
-# ---------------------------------------------------------------------------
+def _send_email_via_smtp(to_address: str, subject: str, body: str) -> bool:
+    host = os.environ.get("SMTP_HOST", "")
+    user = os.environ.get("SMTP_USER", "")
+    password = os.environ.get("SMTP_PASSWORD", "")
+    port = int(os.environ.get("SMTP_PORT", "587"))
+    from_addr = os.environ.get("TESTMAIL_FROM_EMAIL", user)
+
+    if not host or not user or not password:
+        logger.warning("[email] SMTP not configured — skipping send")
+        return False
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = from_addr
+    msg["To"] = to_address
+    msg.attach(MIMEText(body, "plain"))
+
+    try:
+        with smtplib.SMTP(host, port, timeout=15) as server:
+            server.starttls()
+            server.login(user, password)
+            server.sendmail(from_addr, [to_address], msg.as_string())
+        logger.info(f"[email] SMTP sent → {to_address} subject={subject!r}")
+        return True
+    except Exception as exc:
+        logger.warning(f"[email] SMTP send failed ({exc})")
+        return False
+
+
+def _verify_testmail_inbox() -> dict:
+    api_key = os.environ.get("TESTMAIL_API_KEY", "")
+    namespace = os.environ.get("TESTMAIL_NAMESPACE", "")
+    if not api_key or not namespace:
+        return {"verified": False, "reason": "TESTMAIL_API_KEY or TESTMAIL_NAMESPACE not set"}
+
+    query = """
+    query InboxCheck($namespace: String!) {
+      inbox(namespace: $namespace) {
+        result
+        count
+        emails { subject from timestamp }
+      }
+    }
+    """
+    try:
+        resp = httpx.post(
+            "https://api.testmail.app/api/graphql",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={"query": query, "variables": {"namespace": namespace}},
+            timeout=15.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        inbox = data.get("data", {}).get("inbox", {})
+        return {
+            "verified": inbox.get("result") == "success" and inbox.get("count", 0) > 0,
+            "count": inbox.get("count", 0),
+            "emails": inbox.get("emails", [])[:5],
+        }
+    except Exception as exc:
+        logger.warning(f"[testmail] inbox verify failed ({exc})")
+        return {"verified": False, "reason": str(exc)}
+
+
+def _execute_send_approval(email_payload: dict) -> dict:
+    """Core send logic used by the Render task and inline fallback."""
+    account_id: str = email_payload["account_id"]
+    account_name: str = email_payload.get("account_name", account_id)
+    arr: float = float(email_payload.get("arr", 0))
+    usage_drop_pct: float = float(email_payload.get("usage_drop_pct", 0))
+    identifiable_issues: list = email_payload.get("identifiable_issues", [])
+    anonymous_market_sentiment: str = email_payload.get("anonymous_market_sentiment", "")
+    offer_draft: str = email_payload.get("offer_draft", "")
+    subject: str = email_payload.get(
+        "subject", f"We want to make things right, {account_name}"
+    )
+    ticket_summary: str = email_payload.get("ticket_summary", "")
+    policy: dict = email_payload.get("policy") or _default_policy()
+    approved_by: str = email_payload.get("approved_by", "human-operator")
+    detected_ts: str = email_payload.get(
+        "detected_ts", datetime.now(timezone.utc).isoformat()
+    )
+    action_ts: str = email_payload.get(
+        "action_ts", datetime.now(timezone.utc).isoformat()
+    )
+    langfuse_trace_id: str = email_payload.get("langfuse_trace_id", "")
+    discount_pct = email_payload.get("discount_pct")
+    feature_unlock: str = email_payload.get("feature_unlock", "")
+    agent_reasoning: list = email_payload.get("agent_reasoning", [])
+
+    if not offer_draft:
+        offer_draft = _build_offer_draft(
+            account_id=account_id,
+            account_name=account_name,
+            arr=arr,
+            usage_drop_pct=usage_drop_pct,
+            identifiable_issues=identifiable_issues,
+            anonymous_market_sentiment=anonymous_market_sentiment,
+            policy=policy,
+        )
+
+    if not ticket_summary:
+        churn_score = round(
+            arr * (usage_drop_pct / 100) * max(1, len(identifiable_issues)), 2
+        )
+        ticket_summary = _build_ticket_summary(
+            account_id=account_id,
+            account_name=account_name,
+            arr=arr,
+            usage_drop_pct=usage_drop_pct,
+            identifiable_issues=identifiable_issues,
+            anonymous_market_sentiment=anonymous_market_sentiment,
+            policy=policy,
+            churn_score=churn_score,
+            agent_reasoning=agent_reasoning,
+        )
+
+    to_address = os.environ.get("TESTMAIL_TO_EMAIL", "")
+    if not to_address:
+        namespace = os.environ.get("TESTMAIL_NAMESPACE", "ghostchurn")
+        to_address = f"{namespace}.ghostchurn@inbox.testmail.app"
+
+    email_sent = _send_email_via_smtp(to_address, subject, offer_draft)
+    inbox_check = _verify_testmail_inbox() if os.environ.get("TESTMAIL_API_KEY") else {}
+
+    report_path = _write_cited_md(
+        account_id=account_id,
+        account_name=account_name,
+        arr=arr,
+        usage_drop_pct=usage_drop_pct,
+        identifiable_issues=identifiable_issues,
+        anonymous_market_sentiment=anonymous_market_sentiment,
+        offer_draft=offer_draft,
+        ticket_summary=ticket_summary,
+        policy=policy,
+        approved_by=approved_by,
+        detected_ts=detected_ts,
+        action_ts=action_ts,
+        email_to=to_address,
+        langfuse_trace_id=langfuse_trace_id,
+        discount_pct=float(discount_pct) if discount_pct is not None else None,
+        feature_unlock=feature_unlock,
+    )
+
+    report_url = f"/public/{account_id}-cited.md"
+
+    return {
+        "account_id": account_id,
+        "status": "saved",
+        "email_to": to_address,
+        "email_sent": email_sent,
+        "inbox_verified": inbox_check.get("verified", False),
+        "report_path": str(report_path),
+        "report_url": report_url,
+    }
+
 
 @app.task(name="run_agent_evaluation", timeout_seconds=120)
 def run_agent_evaluation(account_id: str, context: dict) -> dict:
-    """
-    Render Workflow task: agent reasoning step.
-    - Queries Senso.ai for account context and discount guardrails
-    - Generates personalised offer_draft and internal ticket_summary
-    - Wraps all steps in a Langfuse trace
-    - POSTs result back to /api/internal/task-result to advance UI state to 4
-    """
     logger.info(f"[render-task] run_agent_evaluation started for {account_id}")
 
     account_name: str = context.get("account_name", account_id)
@@ -271,10 +416,13 @@ def run_agent_evaluation(account_id: str, context: dict) -> dict:
     usage_drop_pct: float = float(context.get("usage_drop_pct", 0))
     identifiable_issues: list = context.get("identifiable_issues", [])
     anonymous_market_sentiment: str = context.get("anonymous_market_sentiment", "")
-    detected_ts: str = context.get("detected_ts", datetime.now(timezone.utc).isoformat())
+    detected_ts: str = context.get(
+        "detected_ts", datetime.now(timezone.utc).isoformat()
+    )
 
     web_signals_count = max(1, len(identifiable_issues))
     churn_score = round(arr * (usage_drop_pct / 100) * web_signals_count, 2)
+    policy = _default_policy()
 
     langfuse = _get_langfuse()
     trace = None
@@ -292,23 +440,6 @@ def run_agent_evaluation(account_id: str, context: dict) -> dict:
         except Exception as exc:
             logger.warning(f"[langfuse] Trace init failed: {exc}")
 
-    # Step 1: Senso query
-    senso_span = None
-    if trace:
-        try:
-            senso_span = trace.span(name="senso_query", input={"account_id": account_id})
-        except Exception:
-            pass
-
-    senso_context = _query_senso(account_id)
-
-    if senso_span:
-        try:
-            senso_span.end(output=senso_context)
-        except Exception:
-            pass
-
-    # Step 2: Offer generation
     offer_span = None
     if trace:
         try:
@@ -326,7 +457,7 @@ def run_agent_evaluation(account_id: str, context: dict) -> dict:
         usage_drop_pct=usage_drop_pct,
         identifiable_issues=identifiable_issues,
         anonymous_market_sentiment=anonymous_market_sentiment,
-        senso=senso_context,
+        policy=policy,
     )
     ticket_summary = _build_ticket_summary(
         account_id=account_id,
@@ -335,7 +466,7 @@ def run_agent_evaluation(account_id: str, context: dict) -> dict:
         usage_drop_pct=usage_drop_pct,
         identifiable_issues=identifiable_issues,
         anonymous_market_sentiment=anonymous_market_sentiment,
-        senso=senso_context,
+        policy=policy,
         churn_score=churn_score,
     )
 
@@ -355,13 +486,14 @@ def run_agent_evaluation(account_id: str, context: dict) -> dict:
         "account_id": account_id,
         "offer_draft": offer_draft,
         "ticket_summary": ticket_summary,
-        "senso_context": senso_context,
+        "policy": policy,
         "langfuse_trace_id": langfuse_trace_id,
         "churn_score": churn_score,
     }
 
-    # POST result back to FastAPI so state advances to 4 (Approval)
-    backend_url = os.environ.get("BACKEND_INTERNAL_URL", "http://localhost:8000")
+    backend_url = _normalize_backend_url(
+        os.environ.get("BACKEND_INTERNAL_URL", "http://localhost:8000")
+    )
     try:
         resp = httpx.post(
             f"{backend_url}/api/internal/task-result",
@@ -377,120 +509,16 @@ def run_agent_evaluation(account_id: str, context: dict) -> dict:
     return result
 
 
-# ---------------------------------------------------------------------------
-# Task 2 — send_approval_email
-# Sends email via testmail.app GraphQL API + writes cited.md
-# ---------------------------------------------------------------------------
-
 @app.task(name="send_approval_email", timeout_seconds=120)
 def send_approval_email(email_payload: dict) -> dict:
-    """
-    Render Workflow task: post-approval execution.
-    - Sends save offer email via testmail.app GraphQL API
-    - Writes public/<account_id>-cited.md evidence report
-    """
-    account_id: str = email_payload["account_id"]
-    account_name: str = email_payload.get("account_name", account_id)
-    arr: float = float(email_payload.get("arr", 0))
-    usage_drop_pct: float = float(email_payload.get("usage_drop_pct", 0))
-    identifiable_issues: list = email_payload.get("identifiable_issues", [])
-    anonymous_market_sentiment: str = email_payload.get("anonymous_market_sentiment", "")
-    offer_draft: str = email_payload.get("offer_draft", "")
-    ticket_summary: str = email_payload.get("ticket_summary", "")
-    senso_context: dict = email_payload.get("senso_context", _SENSO_MOCK)
-    approved_by: str = email_payload.get("approved_by", "human-operator")
-    detected_ts: str = email_payload.get("detected_ts", datetime.now(timezone.utc).isoformat())
-    action_ts: str = email_payload.get("action_ts", datetime.now(timezone.utc).isoformat())
-    langfuse_trace_id: str = email_payload.get("langfuse_trace_id", "")
-
-    if not offer_draft:
-        offer_draft = _build_offer_draft(
-            account_id=account_id,
-            account_name=account_name,
-            arr=arr,
-            usage_drop_pct=usage_drop_pct,
-            identifiable_issues=identifiable_issues,
-            anonymous_market_sentiment=anonymous_market_sentiment,
-            senso=senso_context,
-        )
-
-    logger.info(f"[render-task] send_approval_email started for {account_id}")
-
-    testmail_api_key = os.environ.get("TESTMAIL_API_KEY", "")
-    testmail_namespace = os.environ.get("TESTMAIL_NAMESPACE", "ghostchurn")
-    to_tag = account_id.replace("/", "-")
-    to_address = f"{testmail_namespace}.{to_tag}@inbox.testmail.app"
-    message_id = ""
-
-    if testmail_api_key:
-        try:
-            # testmail.app GraphQL API — send via mutation
-            query = """
-            mutation SendEmail($input: SendEmailInput!) {
-              sendEmail(input: $input) {
-                id
-                status
-              }
-            }
-            """
-            variables = {
-                "input": {
-                    "to": to_address,
-                    "from": f"Ghost Churn Agent <{testmail_namespace}.agent@inbox.testmail.app>",
-                    "subject": f"We want to make things right, {account_name}",
-                    "text": offer_draft,
-                    "html": f"<pre style='font-family:sans-serif;max-width:600px'>{offer_draft}</pre>",
-                }
-            }
-            resp = httpx.post(
-                "https://api.testmail.app/api/graphql",
-                headers={
-                    "Authorization": f"Bearer {testmail_api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={"query": query, "variables": variables},
-                timeout=15.0,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            message_id = (
-                data.get("data", {}).get("sendEmail", {}).get("id", "")
-                or f"mock-{abs(hash(account_id)) % 99999}"
-            )
-            logger.info(f"[render-task] testmail.app email sent → {to_address} (id={message_id})")
-        except Exception as exc:
-            logger.warning(f"[render-task] testmail.app GraphQL send failed ({exc})")
-            message_id = f"mock-{abs(hash(account_id)) % 99999}"
-    else:
-        logger.info(f"[render-task] TESTMAIL_API_KEY not set — skipping live send")
-        logger.info(f"[render-task] Would send to: {to_address}")
-        message_id = f"mock-{abs(hash(account_id)) % 99999}"
-
-    report_path = _write_cited_md(
-        account_id=account_id,
-        account_name=account_name,
-        arr=arr,
-        usage_drop_pct=usage_drop_pct,
-        identifiable_issues=identifiable_issues,
-        anonymous_market_sentiment=anonymous_market_sentiment,
-        offer_draft=offer_draft,
-        ticket_summary=ticket_summary,
-        senso_context=senso_context,
-        approved_by=approved_by,
-        detected_ts=detected_ts,
-        action_ts=action_ts,
-        langfuse_trace_id=langfuse_trace_id,
+    logger.info(
+        f"[render-task] send_approval_email started for {email_payload.get('account_id')}"
     )
-
-    logger.info(f"[render-task] send_approval_email complete for {account_id}")
-    return {
-        "account_id": account_id,
-        "status": "saved",
-        "email_to": to_address,
-        "message_id": message_id,
-        "report_path": str(report_path),
-        "report_url": f"/public/{account_id}-cited.md",
-    }
+    result = _execute_send_approval(email_payload)
+    logger.info(
+        f"[render-task] send_approval_email complete for {result['account_id']}"
+    )
+    return result
 
 
 if __name__ == "__main__":

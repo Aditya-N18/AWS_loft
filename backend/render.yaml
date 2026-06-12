@@ -19,6 +19,16 @@ services:
         sync: false
       - key: TESTMAIL_NAMESPACE
         sync: false
+      - key: TESTMAIL_TO_EMAIL
+        sync: false
+      - key: TESTMAIL_FROM_EMAIL
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
 
   - type: worker
     name: ghost-churn-workflows
@@ -30,10 +40,28 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
+      - key: RENDER_API_KEY
+        sync: false
       - key: TESTMAIL_API_KEY
         sync: false
       - key: TESTMAIL_NAMESPACE
         sync: false
+      - key: TESTMAIL_TO_EMAIL
+        sync: false
+      - key: TESTMAIL_FROM_EMAIL
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: LANGFUSE_PUBLIC_KEY
+        sync: false
+      - key: LANGFUSE_SECRET_KEY
+        sync: false
+      - key: LANGFUSE_HOST
+        value: https://us.cloud.langfuse.com
       - key: BACKEND_INTERNAL_URL
         fromService:
           name: ghost-churn-backend
