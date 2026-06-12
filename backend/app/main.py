@@ -39,8 +39,13 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("ghost-churn")
 
 WORKFLOW_SLUG = os.environ.get("RENDER_WORKFLOW_SLUG", "ghost-churn-workflows")
-TASK_AGENT_EVAL = f"{WORKFLOW_SLUG}/run_agent_evaluation"
-TASK_SEND_EMAIL = f"{WORKFLOW_SLUG}/send_approval_email"
+# Override with exact slug or task ID (tsk-...) from Render Dashboard → Workflows → Tasks
+TASK_AGENT_EVAL = os.environ.get(
+    "RENDER_TASK_AGENT_EVAL", f"{WORKFLOW_SLUG}/run_agent_evaluation"
+)
+TASK_SEND_EMAIL = os.environ.get(
+    "RENDER_TASK_SEND_EMAIL", f"{WORKFLOW_SLUG}/send_approval_email"
+)
 
 USE_LOCAL_DEV = os.environ.get("RENDER_USE_LOCAL_DEV", "").lower() in ("1", "true", "yes")
 
@@ -132,7 +137,16 @@ async def _start_render_task(task_identifier: str, input_data: dict) -> Optional
         logger.info(f"[render-sdk] {task_identifier} queued → run_id={run_id}")
         return run_id
     except Exception as exc:
-        logger.warning(f"[render-sdk] Failed to dispatch {task_identifier}: {exc}")
+        err = str(exc).lower()
+        if "not found" in err:
+            logger.warning(
+                f"[render-sdk] Task '{task_identifier}' not registered on Render. "
+                "You need a **Workflow** service (Dashboard → New → Workflow), "
+                "NOT a background worker. See backend/WORKFLOW_SETUP.md. "
+                "Falling back to inline execution."
+            )
+        else:
+            logger.warning(f"[render-sdk] Failed to dispatch {task_identifier}: {exc}")
         return None
 
 
@@ -238,6 +252,11 @@ def health():
         "version": "3.1.0",
         "render_local_dev": USE_LOCAL_DEV,
         "workflow_slug": WORKFLOW_SLUG,
+        "task_slugs": {
+            "agent_eval": TASK_AGENT_EVAL,
+            "send_email": TASK_SEND_EMAIL,
+        },
+        "workflow_setup": "Create Workflow service in Render Dashboard — see WORKFLOW_SETUP.md",
         "endpoints": {
             "approve": "/workflow/save-customer",
             "usage_warning": "/api/webhooks/usage-warning",
