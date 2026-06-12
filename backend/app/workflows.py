@@ -252,7 +252,10 @@ def _send_email_via_smtp(to_address: str, subject: str, body: str) -> bool:
     user = os.environ.get("SMTP_USER", "")
     password = os.environ.get("SMTP_PASSWORD", "")
     port = int(os.environ.get("SMTP_PORT", "587"))
-    from_addr = os.environ.get("TESTMAIL_FROM_EMAIL", user)
+    # Zoho/Gmail: port 465 = implicit SSL; port 587 = STARTTLS
+    use_ssl = os.environ.get("SMTP_USE_SSL", "").lower() in ("1", "true", "yes") or port == 465
+    # From must match an authorized sender on your SMTP provider (e.g. Zoho mailbox)
+    from_addr = os.environ.get("TESTMAIL_FROM_EMAIL") or user
 
     if not host or not user or not password:
         logger.warning("[email] SMTP not configured — skipping send")
@@ -265,10 +268,17 @@ def _send_email_via_smtp(to_address: str, subject: str, body: str) -> bool:
     msg.attach(MIMEText(body, "plain"))
 
     try:
-        with smtplib.SMTP(host, port, timeout=15) as server:
-            server.starttls()
-            server.login(user, password)
-            server.sendmail(from_addr, [to_address], msg.as_string())
+        if use_ssl:
+            with smtplib.SMTP_SSL(host, port, timeout=30) as server:
+                server.login(user, password)
+                server.sendmail(from_addr, [to_address], msg.as_string())
+        else:
+            with smtplib.SMTP(host, port, timeout=30) as server:
+                server.ehlo()
+                server.starttls()
+                server.ehlo()
+                server.login(user, password)
+                server.sendmail(from_addr, [to_address], msg.as_string())
         logger.info(f"[email] SMTP sent → {to_address} subject={subject!r}")
         return True
     except Exception as exc:
