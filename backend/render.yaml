@@ -2,7 +2,7 @@ services:
   - type: worker
     name: ghost-churn-poller
     env: python
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r backend/requirements.txt
     startCommand: python poller.py
     envVars:
       - key: CLICKHOUSE_HOST
@@ -14,7 +14,7 @@ services:
   - type: web
     name: ghost-churn-api
     env: python
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r backend/requirements.txt
     startCommand: python app.py
     envVars:
       - key: CLICKHOUSE_HOST
