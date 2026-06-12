@@ -1,0 +1,41 @@
+services:
+  - type: web
+    name: ghost-churn-backend
+    env: python
+    region: oregon
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PORT
+        value: 8000
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: RENDER_WORKFLOW_SLUG
+        value: ghost-churn-workflows
+      - key: RENDER_API_KEY
+        sync: false
+      - key: TESTMAIL_API_KEY
+        sync: false
+      - key: TESTMAIL_NAMESPACE
+        sync: false
+
+  - type: worker
+    name: ghost-churn-workflows
+    env: python
+    region: oregon
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app/workflows.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: TESTMAIL_API_KEY
+        sync: false
+      - key: TESTMAIL_NAMESPACE
+        sync: false
+      - key: BACKEND_INTERNAL_URL
+        fromService:
+          name: ghost-churn-backend
+          type: web
+          property: host
