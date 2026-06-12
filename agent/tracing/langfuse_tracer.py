@@ -16,7 +16,7 @@ def _init_langfuse() -> bool:
     if _observe is not None:
         return _observe is not False
 
-    if settings.agent_mock_mode or not settings.has_langfuse:
+    if not settings.has_langfuse:
         _observe = False
         return False
 

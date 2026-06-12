@@ -45,7 +45,23 @@ Pre-approved language: acknowledge usage drop, reference use case, offer discoun
 """
 
 
+def find_folder(api_key: str, name: str) -> str | None:
+    headers = {"X-API-Key": api_key}
+    with httpx.Client(timeout=30.0) as client:
+        response = client.get(f"{SENSO_BASE}/org/kb/find", headers=headers, params={"q": name})
+        if response.status_code != 200:
+            return None
+        for item in response.json().get("nodes", []):
+            if item.get("type") == "folder" and item.get("name") == name:
+                return item.get("kb_node_id")
+    return None
+
+
 def create_folder(api_key: str, name: str) -> str | None:
+    existing = find_folder(api_key, name)
+    if existing:
+        return existing
+
     headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
     with httpx.Client(timeout=30.0) as client:
         response = client.post(
@@ -55,21 +71,29 @@ def create_folder(api_key: str, name: str) -> str | None:
         )
         if response.status_code in {200, 201}:
             body = response.json()
-            return body.get("id") or body.get("kb_node_id")
+            return body.get("kb_node_id") or body.get("id")
         if response.status_code == 409:
-            return None
+            return find_folder(api_key, name)
         response.raise_for_status()
     return None
 
 
 def ingest_raw(api_key: str, title: str, content: str, folder_id: str | None = None) -> dict:
     headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
-    payload: dict = {"title": title, "content": content, "content_type": "text/markdown"}
+    payload: dict = {
+        "title": title,
+        "text": content,
+        "summary": f"Ghost Churn demo account profile: {title}",
+    }
     if folder_id:
         payload["kb_folder_node_id"] = folder_id
 
     with httpx.Client(timeout=30.0) as client:
         response = client.post(f"{SENSO_BASE}/org/kb/raw", headers=headers, json=payload)
+        if response.status_code == 409:
+            return {"id": "already_exists", "processing_status": "duplicate"}
+        if response.status_code >= 400:
+            print(f"Senso error {response.status_code}: {response.text}", file=sys.stderr)
         response.raise_for_status()
         return response.json()
 
@@ -87,14 +111,14 @@ def main() -> int:
 
     folder_id = create_folder(api_key, "ghost-churn-accounts")
     if folder_id:
-        print(f"Created folder ghost-churn-accounts: {folder_id}")
+        print(f"Using folder ghost-churn-accounts: {folder_id}")
 
     for account_id, data in accounts.items():
         title = f"{data['account_name']} ({account_id})"
         content = account_markdown(account_id, data)
         result = ingest_raw(api_key, title, content, folder_id)
         node_id = result.get("id") or result.get("kb_node_id") or "ok"
-        print(f"  ✓ {title} -> {node_id}")
+        print(f"  OK {title} -> {node_id}")
 
     print("Done. Query Senso with: 'What is the max authorized discount for acme-corp?'")
     return 0
